@@ -1,64 +1,76 @@
+<p align="center"><img src=".github/brand/banner.svg" alt="sandboxd by sarmalinux" width="100%"></p>
+
 # sandboxd
 
-> A WebAssembly sandbox for running untrusted code with CPU, wall-clock and memory limits and a deny-by-default host ABI.
+A WebAssembly sandbox for running untrusted code with CPU, wall-clock and memory limits and a deny-by-default host ABI.
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Language: Rust](https://img.shields.io/badge/language-Rust-orange.svg)](https://www.rust-lang.org/)
-[![Last commit](https://img.shields.io/github/last-commit/sarmakska/sandboxd.svg)](https://github.com/sarmakska/sandboxd/commits/main)
+[![License: MIT](https://img.shields.io/github/license/sarmakska/sandboxd?color=38bdf8)](LICENSE)
+[![Language: Rust](https://img.shields.io/github/languages/top/sarmakska/sandboxd?color=22d3ee)](https://www.rust-lang.org/)
+[![Last commit](https://img.shields.io/github/last-commit/sarmakska/sandboxd?color=34d399)](https://github.com/sarmakska/sandboxd/commits/main)
 
-sandboxd runs untrusted `.wasm` and `.wat` modules under three independent, enforced limits: a deterministic instruction budget (fuel), a wall-clock deadline (epoch interruption) and a linear memory cap. The host surface is deny-by-default: there is no WASI and no ambient host functions, so a guest can only call capabilities the embedder explicitly grants, and an allow-list violation is rejected before any guest code runs. It ships as both a library you embed and a CLI you point at a module.
+## The attacks, and how each one dies
+
+I started this project from the attacker, not the API. Here are the four hostile modules I keep in `fixtures/`, what each one tries, and the exact mechanism that stops it. Every row is a test you can run.
+
+| Malicious module | What it attempts | How it is stopped | Error variant | Exit code |
+| --- | --- | --- | --- | --- |
+| `infinite_loop.wat` | spin forever on a back-edge loop | fuel runs out: each instruction deducts from the budget until zero | `FuelExhausted` | 2 |
+| `infinite_loop.wat` (huge fuel) | spin forever, but with fuel set so high it never empties | the epoch watchdog bumps the engine epoch after the deadline; the guest trips at its next loop check | `Timeout` | 3 |
+| `memory_bomb.wat` | call `memory.grow` in a loop until the host is starved | the `ResourceLimiter` refuses the growth at the cap; `memory.grow` returns -1; the guest's `unreachable` is reported as a cap breach | `MemoryLimitExceeded` | 4 |
+| `disallowed_import.wat` | import `env::secret`, a capability that does not exist | rejected at instantiation, before any guest code runs; the error names the import | `DisallowedImport` | 5 |
+| `logger.wat` (no grant) | import `host::log` without it being granted | same deny-by-default rejection; even the one known capability is off until you ask for it | `DisallowedImport` | 5 |
+
+Two of those rows are the same fixture stopped by two different fences. That is the whole design in one line: fuel, time and memory are independent, so a guest that wriggles past one is still caught by another.
 
 ## Why I built this
 
-I wanted a small, auditable answer to a recurring question: how do you run code you do not trust without handing it the keys to the process? The interesting parts of that problem are the enforcement boundaries, so I implemented them for real on top of [wasmtime](https://wasmtime.dev/): fuel metering, epoch-based interruption with a watchdog thread, a `ResourceLimiter` for memory, and a linker that defines only the imports you opt into. The error surface is typed, so an embedder can tell exactly why a run stopped.
+The threat model came first. I wanted to run code I did not write, and did not trust, inside my own process, without giving it the process. The classic answers are a container or a VM per call, but spinning one of those up to evaluate a few hundred instructions of someone's plugin is absurd overhead, and it still leaves you trusting a much bigger surface. WebAssembly is the right shape for this: a guest cannot name an address it was not given, cannot call a function it was not handed, and runs on a runtime built for exactly this. What was missing for me was a small, auditable layer that turns wasmtime's primitives into three hard fences with a typed answer for why a run stopped. So I wrote it on top of [wasmtime](https://wasmtime.dev/): fuel metering, epoch interruption driven by a watchdog thread, a `ResourceLimiter` for memory, and a linker that defines only the imports you opt into. The host boundary is one file you can read in a coffee break.
 
-## Architecture
+## A run, start to finish
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#0d1117','primaryTextColor':'#f5f7fa','primaryBorderColor':'#38bdf8','lineColor':'#22d3ee','secondaryColor':'#0f172a','tertiaryColor':'#0d1117','fontFamily':'ui-monospace, monospace'}}}%%
 flowchart TD
-    A[Untrusted .wasm / .wat bytes] --> B[Sandbox::compile]
-    B -->|parse + validate| C{Compiled module}
-    C -->|invalid| E1[InvalidModule]
-    C --> D[Inspect imports]
-    D -->|import not on allow-list| E2[DisallowedImport]
-    D -->|imports allowed| F[Fresh Store per run]
-    F --> G[Apply limits]
-    G --> G1[set_fuel: instruction budget]
-    G --> G2[set_epoch_deadline + watchdog: wall-clock]
-    G --> G3[ResourceLimiter: memory cap]
-    G --> H[Linker: define only granted host imports]
-    H --> I[Instantiate]
-    I --> J[Call exported function]
-    J -->|returns| K[RunOutput: values + fuel consumed]
-    J -->|out of fuel| E3[FuelExhausted]
-    J -->|epoch interrupt| E4[Timeout]
-    J -->|growth denied| E5[MemoryLimitExceeded]
-    J -->|other trap| E6[Trap]
+    A[Untrusted .wasm or .wat bytes] --> B[compile and validate]
+    B -->|parse error| E1[InvalidModule]
+    B --> C[walk imports against the allow-list]
+    C -->|import not granted| E2[DisallowedImport]
+    C -->|all granted| D[fresh Store per run]
+    D --> F[apply fuel + epoch + memory limits]
+    F --> G[linker defines only granted host imports]
+    G --> H[arm watchdog, instantiate, call export]
+    H -->|returns| K[RunOutput: values + fuel consumed]
+    H -->|out of fuel| E3[FuelExhausted]
+    H -->|epoch interrupt| E4[Timeout]
+    H -->|growth denied| E5[MemoryLimitExceeded]
+    H -->|other trap| E6[Trap]
 ```
 
-## Quickstart
+## Try it in two minutes
 
 ```bash
-# 1. Build the CLI (the first build compiles wasmtime and is slow; later builds are fast).
+# First build compiles wasmtime and Cranelift, so it is slow. Later builds are fast.
 cargo build --release
 
-# 2. Run a well-behaved module: add(2, 40).
+# A pure module: add(2, 40).
 ./target/release/sandboxd fixtures/well_behaved.wat --invoke add --arg 2 --arg 40
+# result: I32(42)   (fuel consumed: 4, on stderr)
 
-# 3. Watch fuel metering kill an infinite loop.
-./target/release/sandboxd fixtures/infinite_loop.wat --fuel 1000000
+# Fuel kills an infinite loop.
+./target/release/sandboxd fixtures/infinite_loop.wat --fuel 1000000          # exit 2
 
-# 4. Watch the memory cap stop an over-allocating module.
-./target/release/sandboxd fixtures/memory_bomb.wat --memory-mb 4 --fuel 1000000000
+# A short deadline kills the same loop when fuel is effectively unlimited.
+./target/release/sandboxd fixtures/infinite_loop.wat --fuel 100000000000 --timeout-ms 100   # exit 3
 
-# 5. See the deny-by-default host reject an unapproved import, then allow one capability.
-./target/release/sandboxd fixtures/logger.wat                # rejected: host::log not granted
-./target/release/sandboxd fixtures/logger.wat --allow-log    # captured: "hello from the guest"
+# The memory cap stops an over-allocating module.
+./target/release/sandboxd fixtures/memory_bomb.wat --memory-mb 4 --fuel 1000000000           # exit 4
+
+# Deny-by-default in action: the same module rejected, then granted one capability.
+./target/release/sandboxd fixtures/logger.wat                # exit 5: host::log not granted
+./target/release/sandboxd fixtures/logger.wat --allow-log    # [guest log] hello from the guest
 ```
 
-Each failure category exits with a distinct code: `2` fuel, `3` timeout, `4` memory, `5` disallowed import, `6` invalid module, `7` export error, `8` guest trap.
-
-## Library usage
+## Embedding it
 
 ```rust
 use std::time::Duration;
@@ -74,7 +86,7 @@ assert_eq!(out.values, vec![Value::I32(42)]);
 # Ok::<(), sandboxd::SandboxError>(())
 ```
 
-To grant the audited log capability:
+Granting the one audited capability and reading back what the guest logged:
 
 ```rust
 use sandboxd::{HostAbi, Sandbox};
@@ -88,48 +100,62 @@ for line in log_sink.lock().unwrap().iter() {
 # Ok::<(), sandboxd::SandboxError>(())
 ```
 
-## What is in the box
+The public surface is deliberately small: `Sandbox`, `Limits`, `HostAbi`, `SandboxError`, `Value`, `RunOutput`. There is nothing else to learn.
 
-- `Sandbox`: a reusable engine that compiles and runs modules under limits.
-- `Limits`: fuel, wall-clock timeout, and memory and table caps, with tight defaults.
-- `HostAbi`: deny-by-default capability grants. Today the one audited capability is `host::log`.
-- `SandboxError`: a typed error per failure mode so callers branch on the reason, not a string.
-- A CLI with flags for fuel, timeout, memory, arguments and capability grants.
-- Five `.wat` fixtures covering the infinite loop, memory bomb, disallowed import, logger and a pure module.
-- An integration test suite that asserts each guarantee, including determinism.
+## Design decisions
 
-## When to use this, and when not to
+A few choices that are not obvious, and the alternatives I turned down.
 
-Use sandboxd when you need to run small, untrusted compute units (plugins, user-submitted functions, rule evaluators, scoring functions) with hard ceilings on CPU, time and memory, and a host surface you control to the byte. It is a good fit for in-process isolation where you do not want to spin up a container or VM per call.
+**Fuel and epoch interruption, not one or the other.** Fuel is deterministic: the same module on the same inputs burns the same instructions every time, which is what makes it a replayable CPU bound. But fuel says nothing about wall-clock time, so a guest that calls into a slow host function, or that the platform deschedules, can hold a thread while burning almost nothing. Epoch interruption catches that. I considered shipping fuel only and calling time-bounding the embedder's problem. I rejected it because the moment you grant a host capability, time spent inside it is invisible to fuel, and a sandbox that cannot bound time is not a sandbox I would put untrusted code in front of. The two fences cost little together and cover each other's blind spot.
 
-Do not reach for sandboxd when the guest legitimately needs broad system access (files, sockets, clocks); that is what WASI exists for, and granting it would undo the point of this project. It is also not a defence against side-channel attacks or against bugs in wasmtime itself; see the [Threat Model](https://github.com/sarmakska/sandboxd/wiki/Threat-Model) for exactly what is and is not in scope.
+**A watchdog thread, not `Config::epoch_interruption` left to tick on its own.** wasmtime's epoch counter does not advance by itself; something has to call `increment_epoch`. The usual recipe is a background thread that bumps it on a fixed cadence. I went with a per-run watchdog that sleeps until the exact deadline, bumps once, and exits, polling a shared atomic so it stops early when the run finishes first. A global ticking thread is simpler to write but gives you coarse, shared timing and a thread that runs forever; the per-run watchdog gives each call its own precise deadline and no idle thread between runs. The cost is one thread spawn per run, which against the cost of compiling and running a module is in the noise.
 
-## Results
+**Deny-by-default with no WASI, instead of WASI plus a capability filter.** The tempting path is to wire in `wasmtime-wasi` and then restrict it. I did not, because WASI's surface is large and its preview is still moving, and "grant all of WASI then claw things back" is exactly the deny-list posture that leaks. Starting from nothing and adding one audited function (`host::log`) means the allow-list is short enough to read in full and the default is the safe one. If you need files or sockets, that is a real need and WASI is the right tool, but it is a different project from this one.
 
-Measured on the development machine (Apple Silicon, release build):
+**A typed `SandboxError` per failure mode, not an opaque error with a message.** I wanted callers to branch on *why* a run stopped (bill it, retry it, ban the module) without scraping strings. So fuel exhaustion, timeout, memory breach, disallowed import, invalid module, export mismatch and a generic guest trap are each their own variant, and the CLI maps each to its own exit code.
 
-| Scenario | Outcome | Notes |
-| --- | --- | --- |
-| `fib(30)` pure module | returns `832040`, fuel consumed `522` | identical fuel across every run |
-| 100 cold CLI invocations of `fib(30)` | about 1.15s total | roughly 11 ms per process including OS spawn |
-| infinite loop, 1,000,000 fuel | stopped, exit `2` | deterministic, independent of wall clock |
-| infinite loop, 100 ms timeout | stopped near 100 ms, exit `3` | epoch watchdog interrupts a pure spin loop |
-| memory bomb, 4 MiB cap | stopped, exit `4` | growth denied at the cap |
+## Numbers
 
-The determinism is the headline result: a pure module consumes exactly the same fuel on every run, which is what makes fuel a reliable, replayable CPU bound.
+Measured on an Apple M3 Pro (macOS 26.3, Rust 1.96, `--release`), driving the CLI against the shipped fixtures.
+
+| Scenario | Result |
+| --- | --- |
+| `add(2, 40)` | returns `I32(42)`, fuel consumed `4` |
+| `fib(30)` | returns `I32(832040)`, fuel consumed `522`, identical on every run |
+| 100 cold CLI invocations of `fib(30)` | 1.06 s total, about 10.6 ms per process including OS spawn and module compile |
+| infinite loop, 1,000,000 fuel | stopped, exit 2 |
+| infinite loop, 100 ms timeout, near-infinite fuel | stopped; wall time about 145 ms end to end across three runs (the extra over 100 ms is process spawn plus compile, not deadline slack) |
+| memory bomb, 4 MiB cap | stopped, exit 4 |
+
+The determinism is the result I care about most: `fib(30)` consumes exactly 522 fuel every single time, which is what lets fuel double as a quota or a billing unit you can reproduce.
+
+## Limitations and non-goals
+
+What this is not, stated plainly because real projects say so.
+
+- **Not a defence against side channels.** Timing, cache and speculative-execution leaks between guests sharing a machine are out of scope. If you run mutually distrusting guests, sandboxd does not stop one inferring things about another through microarchitectural state.
+- **Not protection from denial of service within the limits.** A guest that stays under its fuel, time and memory budgets can still spend the whole budget on every call. Provisioning and rate limiting are yours.
+- **Only as sound as wasmtime.** The isolation rests on wasmtime and Cranelift being correct. An escape there is an escape here. Keep the dependency current.
+- **No WASI, on purpose.** If your guest legitimately needs files, sockets or a clock, this is the wrong tool and I will not be adding WASI to it.
+- **i32 arguments only on the CLI.** The library takes the full scalar set (`i32`, `i64`, `f32`, `f64`); the CLI keeps things simple. For richer arguments or return values, embed the library.
+
+## Roadmap
+
+Things I intend to do, and a couple I have decided against.
+
+- A small set of additional audited capabilities behind explicit grants, each following the `host::log` recipe: a monotonic clock and a seeded RNG are the likely first two, because they are common needs that are easy to make safe.
+- Per-run fuel and memory consumption returned together, so an embedder can size limits from one observed run.
+- Optional `.wasm` precompilation and caching for embedders that run the same module repeatedly.
+- I will not add a plugin manager, a package format or a network of any kind. The scope is "run these bytes under these limits and tell me what happened", and I want it to stay that small.
 
 ## Documentation
 
-The full design lives in the [wiki](https://github.com/sarmakska/sandboxd/wiki):
-
-- [Home](https://github.com/sarmakska/sandboxd/wiki/Home)
-- [Architecture](https://github.com/sarmakska/sandboxd/wiki/Architecture)
-- [Threat Model](https://github.com/sarmakska/sandboxd/wiki/Threat-Model)
-- [Resource Limits](https://github.com/sarmakska/sandboxd/wiki/Resource-Limits)
-- [Host ABI](https://github.com/sarmakska/sandboxd/wiki/Host-ABI)
-- [CLI Usage](https://github.com/sarmakska/sandboxd/wiki/CLI-Usage)
-- [Troubleshooting](https://github.com/sarmakska/sandboxd/wiki/Troubleshooting)
+The full design lives in the [wiki](https://github.com/sarmakska/sandboxd/wiki): [Home](https://github.com/sarmakska/sandboxd/wiki/Home), [Architecture](https://github.com/sarmakska/sandboxd/wiki/Architecture), [Threat Model](https://github.com/sarmakska/sandboxd/wiki/Threat-Model), [Resource Limits](https://github.com/sarmakska/sandboxd/wiki/Resource-Limits), [Host ABI](https://github.com/sarmakska/sandboxd/wiki/Host-ABI), [CLI Usage](https://github.com/sarmakska/sandboxd/wiki/CLI-Usage), [Troubleshooting](https://github.com/sarmakska/sandboxd/wiki/Troubleshooting), [Roadmap and Limitations](https://github.com/sarmakska/sandboxd/wiki/Roadmap-and-Limitations).
 
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
+
+---
+Built by Sarma. Part of the SarmaLinux open-source line.
+Website: https://sarmalinux.com  .  GitHub: https://github.com/sarmakska
