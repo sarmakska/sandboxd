@@ -1,6 +1,6 @@
 # Troubleshooting
 
-This page lists the errors you are most likely to hit, what each one means, and how to fix it. Every error maps to a `SandboxError` variant and, on the CLI, to a distinct exit code (see [CLI Usage](CLI-Usage)).
+This page lists the errors you are most likely to hit, what each one means, and how to fix it. Every error maps to a `SandboxError` variant and, on the CLI, to a distinct exit code (see [CLI Usage](CLI-Usage)). For the variant catalogue itself, with what each one carries and where it is raised, see the [Error Reference](Error-Reference).
 
 ## `fuel exhausted: the module exceeded its instruction budget`
 
