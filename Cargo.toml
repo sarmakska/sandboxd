@@ -1,0 +1,28 @@
+[package]
+name = "sandboxd"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "A WebAssembly sandbox for running untrusted code with CPU, wall-clock and memory limits and a deny-by-default host ABI."
+license = "MIT"
+repository = "https://github.com/sarmakska/sandboxd"
+readme = "README.md"
+keywords = ["wasm", "sandbox", "wasmtime", "security", "isolation"]
+categories = ["wasm", "command-line-utilities"]
+
+[[bin]]
+name = "sandboxd"
+path = "src/main.rs"
+
+[lib]
+name = "sandboxd"
+path = "src/lib.rs"
+
+[dependencies]
+wasmtime = { version = "45", default-features = false, features = ["cranelift", "runtime", "parallel-compilation", "gc-drc", "wat"] }
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
