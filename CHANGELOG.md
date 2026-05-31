@@ -17,3 +17,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Integration test suite covering fuel exhaustion, epoch timeout, the memory cap, disallowed-import rejection at instantiation, the allowed import path, determinism of a pure module, and the error paths for missing exports, signature mismatches and invalid modules.
 - Documentation: a product-page README with a Mermaid architecture diagram and a benchmarks section, plus a full wiki (Home, Architecture, Threat Model, Resource Limits, Host ABI, CLI Usage, Troubleshooting).
 - Continuous integration that builds, lints with clippy and runs the test suite on push and pull request.
+- SarmaLinux brand: a README banner and shield mark under `.github/brand/`, palette-themed Mermaid diagrams, and the project footer.
+
+### Changed
+
+- README rewritten to open from the attacker's point of view, with an attack-fixture table, a design-decisions section naming the alternatives I rejected, real measured numbers from an Apple M3 Pro, and an explicit limitations and roadmap.
+- Wiki lifted to a 30-second Home with a system diagram and navigation table, a new Roadmap and Limitations page, and palette-themed diagrams throughout.
