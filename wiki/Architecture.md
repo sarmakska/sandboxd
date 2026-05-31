@@ -30,6 +30,7 @@ The engine is reference counted internally and safe to share, so you create one 
 ## The instantiate-and-limit flow
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#0d1117','primaryTextColor':'#f5f7fa','primaryBorderColor':'#38bdf8','lineColor':'#22d3ee','secondaryColor':'#0f172a','tertiaryColor':'#0d1117','fontFamily':'ui-monospace, monospace'}}}%%
 flowchart TD
     A[Untrusted bytes: .wasm or .wat] --> B[Module::new compiles and validates]
     B -->|parse or validate error| E1[SandboxError::InvalidModule]
@@ -75,3 +76,24 @@ This thread-based approach is what lets sandboxd stop a guest that is spinning i
 ## Why a fresh store per run
 
 State isolation is a correctness property, not just hygiene. Fuel is stored on the store; so is the epoch deadline and the resource limiter. By building a new store each run we guarantee that the budget is exactly what the caller asked for and that no residue from a previous run can change a later one. The engine, which holds the expensive compiled artefacts and the Cranelift backend, is the part that is reused.
+
+## Design decisions and the roads not taken
+
+These are the choices that shaped the code, with the alternatives I weighed and rejected.
+
+**Two fences for compute, not one.** Fuel (`Config::consume_fuel`) is deterministic and replayable but blind to wall-clock time. Epoch interruption (`Config::epoch_interruption`) bounds time but is not deterministic. I kept both rather than picking one. The alternative, fuel only, falls down the moment you grant a host capability: time spent inside a host call does not consume fuel, so a guest could hold a thread indefinitely while burning almost nothing. The alternative, time only, throws away the replayable CPU bound that makes fuel useful as a quota. Carrying both is cheap and each covers the other's blind spot.
+
+**A per-run watchdog thread, not a global epoch ticker.** wasmtime's epoch counter does not advance on its own. The common pattern is one long-lived thread that calls `increment_epoch` on a fixed cadence. `Watchdog::arm` instead spawns a thread per run that sleeps until that run's exact deadline, bumps once, and exits, polling a shared `AtomicBool` so it stops early when the call returns first. A global ticker is less code but gives coarse shared timing and a thread that never dies; the per-run watchdog gives each call its own precise deadline and no idle thread between runs. The price is one thread spawn per run, negligible next to compiling and running a module.
+
+**Inspect imports ourselves before instantiation, not rely on the linker alone.** `reject_disallowed_imports` walks `module.imports()` and rejects anything off the allow-list before the store is built. wasmtime would also reject an undefined import at `Linker::instantiate`, so this looks redundant. It is deliberate belt-and-braces: doing it first means the rejection happens before any store or guest setup, and lets us name the exact offending import in the error rather than parsing wasmtime's message. `map_instantiation_error` still translates a late instantiation failure back into `DisallowedImport`, so both layers agree.
+
+**A typed error enum, not a string or an `anyhow` blob.** Every stop reason an embedder might act on is its own `SandboxError` variant (see [Threat Model](Threat-Model) and `src/error.rs`). The cost is a little more matching in `classify_trap`; the benefit is that callers branch on the reason without scraping strings, and the CLI maps each variant to its own exit code.
+
+## Failure modes worth knowing
+
+- **A guest that exports no memory but is granted `host::log`.** `host::log` requires the guest to export its linear memory as `memory`. Without it the host call traps cleanly with a clear message rather than reading arbitrary bytes. See [Host ABI](Host-ABI).
+- **A guest that reacts to a denied `memory.grow` in an unusual way.** Because `growth_was_denied()` is checked before trap classification, any reaction to a refused growth (an `unreachable`, an out-of-bounds store, a plain trap) is reported as `MemoryLimitExceeded`, not as a generic trap.
+- **A timeout that never fires because the run finishes first.** The watchdog polls its atomic and exits without bumping the epoch, so a fast run pays only the spawn cost.
+
+---
+SarmaLinux . sarmalinux.com . [repo](https://github.com/sarmakska/sandboxd)

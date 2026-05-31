@@ -14,6 +14,21 @@ The guest is assumed to be fully hostile. It may:
 
 The embedder (the code calling sandboxd) is trusted. The host machine and the wasmtime build are trusted.
 
+## The attack fixtures, and how each dies
+
+The repo ships a fixture per hostile behaviour. Each row is exercised by an integration test in `tests/sandbox.rs`, so the table is executable, not aspirational.
+
+| Fixture | Attack | Mechanism that stops it | Error variant | Test |
+| --- | --- | --- | --- | --- |
+| `infinite_loop.wat` | spin forever on a back-edge loop | fuel deducts per instruction until the budget hits zero, then `Trap::OutOfFuel` | `FuelExhausted` | `fuel_exhaustion_terminates` |
+| `infinite_loop.wat` | spin forever with near-infinite fuel | the watchdog bumps the engine epoch after the deadline; the guest trips at its next loop check with `Trap::Interrupt` | `Timeout` | `epoch_timeout_terminates` |
+| `memory_bomb.wat` | grow linear memory without bound | the `ResourceLimiter` refuses growth at the cap; `growth_was_denied()` is recorded; the guest's reaction is reported as a cap breach | `MemoryLimitExceeded` | `memory_cap_enforced` |
+| `disallowed_import.wat` | import `env::secret`, an ungranted capability | rejected at instantiation by `reject_disallowed_imports`, before any guest code runs; the error names `env::secret` | `DisallowedImport` | `disallowed_import_rejected` |
+| `logger.wat` | import `host::log` without a grant | the same deny-by-default rejection: even the one known capability is off until you ask for it | `DisallowedImport` | `log_import_denied_by_default` |
+| `logger.wat` | import `host::log` with the grant, then pass a pointer and length | bounds-checked copy out of guest memory into an auditable sink; out-of-range pointers trap | runs, line captured | `allowed_import_works` |
+
+The infinite loop appears twice on purpose: it is one fixture stopped by two independent fences. That redundancy is the design.
+
 ## What sandboxd guarantees
 
 ### 1. Bounded CPU
@@ -53,3 +68,6 @@ These are explicitly out of scope. Stating them is part of being honest about th
 ## Reporting
 
 If you find a way for a guest to escape any of the guarantees in the first section, please follow the disclosure process in [SECURITY.md](https://github.com/sarmakska/sandboxd/blob/main/SECURITY.md): email security@sarmalinux.com and expect an acknowledgement within 7 days.
+
+---
+SarmaLinux . sarmalinux.com . [repo](https://github.com/sarmakska/sandboxd)

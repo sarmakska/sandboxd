@@ -126,3 +126,6 @@ fuel consumed: 4
 - Arguments are i32 only on the CLI. For other types, or for returning structured data, use the library API.
 - `fuel consumed` is printed to stderr so it does not interfere with parsing the result on stdout.
 - The default export name is `run`, which is why most fixtures export `run`; pass `--invoke` to call a different one.
+
+---
+SarmaLinux . sarmalinux.com . [repo](https://github.com/sarmakska/sandboxd)

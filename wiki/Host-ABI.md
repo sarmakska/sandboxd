@@ -81,3 +81,6 @@ If you extend the host, follow the same discipline:
 5. Audit it, and write a test that proves it is denied by default and works when granted.
 
 The shipped `host::log` is the worked reference for all five steps.
+
+---
+SarmaLinux . sarmalinux.com . [repo](https://github.com/sarmakska/sandboxd)

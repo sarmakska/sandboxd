@@ -59,3 +59,6 @@ This is expected. wasmtime and Cranelift are large crates and the first compile 
 ## `cargo fmt --check` fails in CI but the code looks fine
 
 Run `cargo fmt --all` locally and commit the result. CI enforces formatting with `cargo fmt --all --check`, so any unformatted code fails the pipeline. If `rustfmt` is missing locally, install it with `rustup component add rustfmt`.
+
+---
+SarmaLinux . sarmalinux.com . [repo](https://github.com/sarmakska/sandboxd)

@@ -97,3 +97,6 @@ After the call, if `growth_was_denied()` is set, the run is reported as `Sandbox
 ### Tuning memory
 
 Set `memory_bytes` to the largest working set a legitimate guest needs, plus headroom. Remember that WebAssembly memory grows in 64 KiB pages, so the cap is effectively rounded down to a page boundary. The table and instance caps are usually fine at their defaults; raise `instances` only if you intentionally let a module create more than one instance.
+
+---
+SarmaLinux . sarmalinux.com . [repo](https://github.com/sarmakska/sandboxd)
