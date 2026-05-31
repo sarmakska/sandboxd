@@ -1,5 +1,3 @@
-<p align="center"><img src=".github/brand/banner.svg" alt="sandboxd by sarmalinux" width="100%"></p>
-
 # sandboxd
 
 A WebAssembly sandbox for running untrusted code with CPU, wall-clock and memory limits and a deny-by-default host ABI.
