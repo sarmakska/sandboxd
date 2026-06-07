@@ -12,6 +12,8 @@ const MEMORY_BOMB: &str = include_str!("../fixtures/memory_bomb.wat");
 const DISALLOWED_IMPORT: &str = include_str!("../fixtures/disallowed_import.wat");
 const WELL_BEHAVED: &str = include_str!("../fixtures/well_behaved.wat");
 const LOGGER: &str = include_str!("../fixtures/logger.wat");
+const RANDOM: &str = include_str!("../fixtures/random.wat");
+const GROW_WITHIN_CAP: &str = include_str!("../fixtures/grow_within_cap.wat");
 
 /// Fuel exhaustion terminates an infinite loop deterministically, even with a
 /// long timeout that would never fire.
@@ -201,6 +203,96 @@ fn signature_mismatch_is_reported() {
         .unwrap_err();
 
     assert!(matches!(err, SandboxError::Export(_)));
+}
+
+/// The random capability is denied by default: a module importing host::random
+/// without a grant is rejected at instantiation, naming the import.
+#[test]
+fn random_import_denied_by_default() {
+    let sandbox = Sandbox::deny_all().unwrap();
+    let limits = Limits::default();
+
+    let err = sandbox
+        .run(RANDOM.as_bytes(), "roll", &[], &limits)
+        .unwrap_err();
+
+    match err {
+        SandboxError::DisallowedImport { module, name } => {
+            assert_eq!(module, "host");
+            assert_eq!(name, "random");
+        }
+        other => panic!("expected DisallowedImport, got {other:?}"),
+    }
+}
+
+/// When the random capability is granted with a seed, the import works and the
+/// stream is deterministic: the same seed produces the same value every run,
+/// across fresh sandboxes.
+#[test]
+fn seeded_random_is_deterministic() {
+    let roll = |seed: u64| {
+        let host = HostAbi::deny_all().allow_random(seed);
+        let sandbox = Sandbox::new(host).unwrap();
+        let out = sandbox
+            .run(RANDOM.as_bytes(), "roll", &[], &Limits::default())
+            .expect("random should run when granted");
+        match out.values.as_slice() {
+            [Value::I32(v)] => *v,
+            other => panic!("expected one i32, got {other:?}"),
+        }
+    };
+
+    // The same seed yields the same value across independent sandboxes.
+    assert_eq!(roll(42), roll(42));
+    assert_eq!(roll(0), roll(0));
+}
+
+/// Two different seeds produce different streams: the seed actually steers the
+/// generator rather than being ignored.
+#[test]
+fn different_seeds_diverge() {
+    let roll = |seed: u64| {
+        let host = HostAbi::deny_all().allow_random(seed);
+        let sandbox = Sandbox::new(host).unwrap();
+        let out = sandbox
+            .run(RANDOM.as_bytes(), "roll", &[], &Limits::default())
+            .unwrap();
+        match out.values.as_slice() {
+            [Value::I32(v)] => *v,
+            other => panic!("expected one i32, got {other:?}"),
+        }
+    };
+
+    assert_ne!(roll(1), roll(2));
+}
+
+/// A run that grows linear memory within its cap reports the high-water mark,
+/// and a pure run that never grows reports zero.
+#[test]
+fn peak_memory_is_reported() {
+    let sandbox = Sandbox::deny_all().unwrap();
+    // A 16 MiB cap, well above the 2 MiB the fixture grows to.
+    let limits = Limits::new(1_000_000, Duration::from_secs(60), 16 * 1024 * 1024);
+
+    let out = sandbox
+        .run(GROW_WITHIN_CAP.as_bytes(), "run", &[], &limits)
+        .expect("growth within the cap should succeed");
+
+    // 32 pages of 64 KiB each is 2 MiB.
+    assert_eq!(out.peak_memory_bytes, 32 * 64 * 1024);
+    // The export returns the final page count.
+    assert_eq!(out.values, vec![Value::I32(32)]);
+
+    // A pure module that never grows reports a peak of zero.
+    let pure = sandbox
+        .run(
+            WELL_BEHAVED.as_bytes(),
+            "add",
+            &[Value::I32(1), Value::I32(2)],
+            &limits,
+        )
+        .unwrap();
+    assert_eq!(pure.peak_memory_bytes, 0);
 }
 
 /// Invalid module bytes produce InvalidModule rather than a panic.

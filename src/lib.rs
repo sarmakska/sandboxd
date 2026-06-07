@@ -7,7 +7,10 @@
 //! - A wall-clock timeout via epoch interruption and a watchdog thread.
 //! - A linear memory cap enforced by a [`wasmtime::ResourceLimiter`].
 //! - No WASI and no ambient host functions. The guest can only call host
-//!   capabilities the embedder explicitly grants.
+//!   capabilities the embedder explicitly grants, today `host::log` and a
+//!   seeded, deterministic `host::random`.
+//! - A per-run report of fuel consumed and the peak linear memory reached, so
+//!   an embedder can size limits from one observed run.
 //!
 //! # Quick start
 //!

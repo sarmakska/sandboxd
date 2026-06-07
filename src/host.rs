@@ -7,6 +7,7 @@
 //! guest emit a UTF-8 string for observability without granting it any other
 //! reach into the host.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use wasmtime::{bail, Caller, Error, Extern, Linker, Result};
@@ -25,6 +26,10 @@ pub struct HostAbi {
     /// When set, the guest may import `host::log`. Lines are appended to this
     /// sink so the embedder can audit exactly what the guest emitted.
     log_sink: Option<LogSink>,
+    /// When set, the guest may import `host::random`. The generator is seeded
+    /// and deterministic, so a run is as reproducible as a pure one: the same
+    /// seed and the same call sequence yield the same numbers every time.
+    rng_state: Option<Arc<AtomicU64>>,
 }
 
 impl HostAbi {
@@ -47,6 +52,25 @@ impl HostAbi {
     /// Whether the `host::log` capability has been granted.
     pub fn log_allowed(&self) -> bool {
         self.log_sink.is_some()
+    }
+
+    /// Permit the guest to import `host::random`, a deterministic 64-bit
+    /// generator seeded by `seed`.
+    ///
+    /// The generator is a splitmix64 advance over an atomic counter, so it
+    /// needs no external dependency and preserves the project's reproducibility
+    /// guarantee: the same seed and the same number of calls produce the same
+    /// stream every time. It is suitable for simulation, sampling and test
+    /// fixtures. It is *not* a cryptographic source and must not be used to
+    /// generate keys, nonces or anything where unpredictability matters.
+    pub fn allow_random(mut self, seed: u64) -> Self {
+        self.rng_state = Some(Arc::new(AtomicU64::new(seed)));
+        self
+    }
+
+    /// Whether the `host::random` capability has been granted.
+    pub fn random_allowed(&self) -> bool {
+        self.rng_state.is_some()
     }
 
     /// Register the allowed imports onto a linker.
@@ -73,8 +97,33 @@ impl HostAbi {
                 },
             )?;
         }
+        if let Some(state) = &self.rng_state {
+            let state = state.clone();
+            // Signature: () -> i64. Each call advances the seeded generator by
+            // one splitmix64 step and returns the next 64-bit value. The guest
+            // gets numbers but no reach into the host: there is no pointer, no
+            // memory access and no syscall behind this.
+            linker.func_wrap("host", "random", move |_caller: Caller<'_, StoreState>| {
+                next_random(&state) as i64
+            })?;
+        }
         Ok(())
     }
+}
+
+/// Advance a splitmix64 generator held in an atomic and return the next value.
+///
+/// splitmix64 is a well-known finaliser: it passes the usual statistical test
+/// suites for a non-cryptographic generator, has a full 2^64 period, and needs
+/// no state beyond a single 64-bit counter. We use a relaxed
+/// fetch-then-finalise so concurrent guests on a shared ABI still each get a
+/// distinct, deterministic-per-seed value without a lock.
+fn next_random(state: &AtomicU64) -> u64 {
+    let z = state.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed);
+    let z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    let z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 
 /// Read a UTF-8 string out of the guest's exported linear memory.

@@ -108,6 +108,10 @@ pub struct StoreState {
     /// limit breach precisely, even when the guest turns the failed growth
     /// into an `unreachable` trap rather than a memory access fault.
     growth_denied: bool,
+    /// The largest linear-memory size, in bytes, the guest was ever allowed to
+    /// reach during the run. Updated on every granted growth so the embedder
+    /// can size the memory cap from one observed run.
+    peak_memory_bytes: usize,
 }
 
 impl StoreState {
@@ -115,12 +119,18 @@ impl StoreState {
         Self {
             limits: limits.store_limits(),
             growth_denied: false,
+            peak_memory_bytes: 0,
         }
     }
 
     /// Whether the guest was denied a memory or table growth during the run.
     pub(crate) fn growth_was_denied(&self) -> bool {
         self.growth_denied
+    }
+
+    /// The high-water mark of linear memory the guest reached, in bytes.
+    pub(crate) fn peak_memory_bytes(&self) -> usize {
+        self.peak_memory_bytes
     }
 }
 
@@ -132,7 +142,9 @@ impl ResourceLimiter for StoreState {
         maximum: Option<usize>,
     ) -> wasmtime::Result<bool> {
         let allowed = self.limits.memory_growing(current, desired, maximum)?;
-        if !allowed {
+        if allowed {
+            self.peak_memory_bytes = self.peak_memory_bytes.max(desired);
+        } else {
             self.growth_denied = true;
         }
         Ok(allowed)

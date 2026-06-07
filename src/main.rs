@@ -46,6 +46,12 @@ struct Cli {
     /// lines. Off by default: the host denies everything unless asked.
     #[arg(long)]
     allow_log: bool,
+
+    /// Grant the audited `host::random` capability, seeded with this value, so
+    /// the guest can draw deterministic 64-bit numbers. Off by default. The
+    /// generator is reproducible per seed and is not cryptographic.
+    #[arg(long, value_name = "SEED")]
+    seed: Option<u64>,
 }
 
 fn main() -> ExitCode {
@@ -71,12 +77,15 @@ fn run(cli: Cli) -> Result<(), SandboxError> {
         cli.memory_mb * 1024 * 1024,
     );
 
-    let (host, log_sink) = if cli.allow_log {
+    let (mut host, log_sink) = if cli.allow_log {
         let (host, sink) = HostAbi::deny_all().allow_log();
         (host, Some(sink))
     } else {
         (HostAbi::deny_all(), None)
     };
+    if let Some(seed) = cli.seed {
+        host = host.allow_random(seed);
+    }
 
     let sandbox = Sandbox::new(host)?;
 
@@ -99,6 +108,9 @@ fn run(cli: Cli) -> Result<(), SandboxError> {
     }
     if let Some(fuel) = output.fuel_consumed {
         eprintln!("fuel consumed: {fuel}");
+    }
+    if output.peak_memory_bytes > 0 {
+        eprintln!("peak linear memory: {} bytes", output.peak_memory_bytes);
     }
 
     Ok(())

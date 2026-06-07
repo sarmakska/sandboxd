@@ -56,6 +56,11 @@ pub struct RunOutput {
     pub values: Vec<Value>,
     /// Fuel consumed during the run, if the engine reports it.
     pub fuel_consumed: Option<u64>,
+    /// The high-water mark of linear memory the guest reached during the run,
+    /// in bytes. This is the largest growth the memory cap allowed, so an
+    /// embedder can size the cap from one observed run. A module that never
+    /// grows its memory beyond its declared minimum reports `0` here.
+    pub peak_memory_bytes: usize,
 }
 
 /// A reusable sandbox bound to a single engine configuration.
@@ -173,6 +178,8 @@ impl Sandbox {
             .ok()
             .map(|remaining| limits.fuel.saturating_sub(remaining));
 
+        let peak_memory_bytes = store.data().peak_memory_bytes();
+
         match call_result {
             Ok(()) => {
                 let values = results
@@ -182,6 +189,7 @@ impl Sandbox {
                 Ok(RunOutput {
                     values,
                     fuel_consumed,
+                    peak_memory_bytes,
                 })
             }
             Err(trap) => {
@@ -204,11 +212,7 @@ impl Sandbox {
     /// naming the exact import.
     fn reject_disallowed_imports(&self, module: &Module) -> Result<()> {
         for import in module.imports() {
-            let allowed = matches!(
-                (import.module(), import.name(), self.host.log_allowed()),
-                ("host", "log", true)
-            );
-            if !allowed {
+            if !import_is_allowed(import.module(), import.name(), &self.host) {
                 return Err(SandboxError::DisallowedImport {
                     module: import.module().to_string(),
                     name: import.name().to_string(),
@@ -314,11 +318,7 @@ fn map_instantiation_error(err: wasmtime::Error, module: &Module, host: &HostAbi
     let message = err.to_string();
     if message.contains("unknown import") || message.contains("incompatible import") {
         for import in module.imports() {
-            let allowed = matches!(
-                (import.module(), import.name(), host.log_allowed()),
-                ("host", "log", true)
-            );
-            if !allowed {
+            if !import_is_allowed(import.module(), import.name(), host) {
                 return SandboxError::DisallowedImport {
                     module: import.module().to_string(),
                     name: import.name().to_string(),
@@ -327,6 +327,17 @@ fn map_instantiation_error(err: wasmtime::Error, module: &Module, host: &HostAbi
         }
     }
     SandboxError::Host(format!("instantiation failed: {message}"))
+}
+
+/// Whether a single import is on the host allow-list. This is the one place
+/// the granted-capability set is expressed, so the pre-instantiation check and
+/// the instantiation-error mapping cannot drift apart.
+fn import_is_allowed(module: &str, name: &str, host: &HostAbi) -> bool {
+    match (module, name) {
+        ("host", "log") => host.log_allowed(),
+        ("host", "random") => host.random_allowed(),
+        _ => false,
+    }
 }
 
 /// Classify a trap raised during the call. Fuel and epoch interruption have
