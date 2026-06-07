@@ -31,16 +31,19 @@ For your capability, add a field whose presence means "granted", and a builder t
 
 ### 2. Teach the import allow-list to recognise it
 
-`reject_disallowed_imports` in `src/sandbox.rs` decides which imports are permitted. Today it hard-codes the single allowed pair:
+The allow-list lives in one function, `import_is_allowed` in `src/sandbox.rs`, so the pre-instantiation check (`reject_disallowed_imports`) and the late-failure mapping (`map_instantiation_error`) both read from it and cannot drift apart:
 
 ```rust
-let allowed = matches!(
-    (import.module(), import.name(), self.host.log_allowed()),
-    ("host", "log", true)
-);
+fn import_is_allowed(module: &str, name: &str, host: &HostAbi) -> bool {
+    match (module, name) {
+        ("host", "log") => host.log_allowed(),
+        ("host", "random") => host.random_allowed(),
+        _ => false,
+    }
+}
 ```
 
-Add your `(module, name)` pair, gated on your capability being granted. The same recognition must be added to `map_instantiation_error`, which translates a late linker failure back into `DisallowedImport`. Both checks have to agree; that is the belt-and-braces design from [Design Decisions](Design-Decisions). If you add several capabilities, generalise these two `matches!` into a small allow-list table so they cannot drift apart.
+Add your `(module, name)` arm, gated on your capability's `*_allowed()` accessor. That single edit is picked up by both the pre-check and the instantiation-error path, which is the belt-and-braces design from [Design Decisions](Design-Decisions): even if one path were bypassed, the linker only defines granted imports, so wasmtime's own instantiation still fails and `map_instantiation_error` translates it back into `DisallowedImport`.
 
 ### 3. Define the function in `register`, validating everything
 
@@ -63,7 +66,7 @@ pub(crate) fn register(&self, linker: &mut Linker<StoreState>) -> Result<()> {
 }
 ```
 
-Define your function the same way: only when the capability is present, and validate every argument the guest controls before acting on it.
+Define your function the same way: only when the capability is present, and validate every argument the guest controls before acting on it. If your capability takes no guest-controlled input, the second shipped capability, `host::random`, is the simpler worked example: it registers a `() -> i64` function with nothing to validate and no pointer to hand back.
 
 ### 4. Never trust a guest pointer or length
 
@@ -110,7 +113,7 @@ Add a hostile fixture if the capability takes guest-controlled arguments, the wa
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#0d1117','primaryTextColor':'#f5f7fa','primaryBorderColor':'#38bdf8','lineColor':'#22d3ee','secondaryColor':'#0f172a','tertiaryColor':'#0d1117','fontFamily':'ui-monospace, monospace'}}}%%
 flowchart TD
-    A[1. field + allow_* builder on HostAbi] --> B[2. add pair to reject_disallowed_imports and map_instantiation_error]
+    A[1. field + allow_* builder on HostAbi] --> B[2. add arm to import_is_allowed]
     B --> C[3. define in register, gated on the grant]
     C --> D[4. validate every guest pointer and length]
     D --> E[5. test denied-by-default and works-when-granted]

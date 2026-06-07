@@ -21,6 +21,8 @@ const MEMORY_BOMB: &str = include_str!("../fixtures/memory_bomb.wat");
 const DISALLOWED_IMPORT: &str = include_str!("../fixtures/disallowed_import.wat");
 const WELL_BEHAVED: &str = include_str!("../fixtures/well_behaved.wat");
 const LOGGER: &str = include_str!("../fixtures/logger.wat");
+const RANDOM: &str = include_str!("../fixtures/random.wat");
+const GROW_WITHIN_CAP: &str = include_str!("../fixtures/grow_within_cap.wat");
 ```
 
 This means the attack table in the README and the [Threat Model](Threat-Model) is executable: every row is backed by a test that runs the actual malicious module and asserts the actual error variant. The fixtures are documented in [Module Format and WAT](Module-Format-and-WAT).
@@ -35,6 +37,10 @@ This means the attack table in the README and the [Threat Model](Threat-Model) i
 | `disallowed_import_rejected` | disallowed import | rejected with `DisallowedImport { env, secret }` before any code runs |
 | `log_import_denied_by_default` | logger | even `host::log` is denied without a grant: `DisallowedImport { host, log }` |
 | `allowed_import_works` | logger | with `allow_log`, the run succeeds and the sink holds exactly `["hello from the guest"]` |
+| `random_import_denied_by_default` | random | `host::random` is denied without a grant: `DisallowedImport { host, random }` |
+| `seeded_random_is_deterministic` | random | with `allow_random(seed)`, the same seed yields the same value across fresh sandboxes |
+| `different_seeds_diverge` | random | two different seeds produce different values, so the seed actually steers the stream |
+| `peak_memory_is_reported` | grow-within-cap, well-behaved | a bounded growth reports `peak_memory_bytes == 2 MiB`; a pure run reports `0` |
 | `well_behaved_returns_value` | well-behaved | `add(2, 40)` returns `I32(42)` and reports fuel consumed |
 | `pure_module_is_deterministic` | well-behaved | `fib(20)` returns `6765` and burns identical fuel across three fresh sandboxes |
 | `missing_export_is_reported` | well-behaved | calling a non-existent export gives `Export`, not a panic |

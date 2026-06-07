@@ -46,7 +46,7 @@ The wall-clock deadline is a safety net, not the primary control. Prefer fuel fo
 
 The cap bounds total linear memory. wasmtime grows memory in 64 KiB pages, so the effective cap is rounded down to a page boundary.
 
-**Picking a cap.** Set `memory_bytes` to the largest working set a legitimate guest needs plus headroom. There is currently no per-run memory high-water reported (it is on the [roadmap](Roadmap-and-Limitations)), so size it from what your guest's data structures require. The default 16 MiB suits small compute kernels; raise it for guests that build large buffers.
+**Picking a cap.** Set `memory_bytes` to the largest working set a legitimate guest needs plus headroom. Run the guest once under a generous cap and read `RunOutput.peak_memory_bytes` (the CLI prints it as `peak linear memory`): that high-water mark is the floor for the cap, and you add headroom on top. The default 16 MiB suits small compute kernels; raise it for guests that build large buffers.
 
 **Tables and instances.** `table_elements` (default 10,000) and `instances` (default 1) rarely need changing. Raise `instances` only if you intentionally let a module create more than one instance. These have no `with_*` builder; set the field directly:
 

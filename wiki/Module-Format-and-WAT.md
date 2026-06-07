@@ -1,6 +1,6 @@
 # Module Format and WAT
 
-What sandboxd accepts as input, what shape a module must have to run, and how to read the five shipped fixtures. This page is the bridge between "I have some code" and "sandboxd runs it". For compiling a guest from a real language, see [Writing a Guest Module](Writing-a-Guest-Module).
+What sandboxd accepts as input, what shape a module must have to run, and how to read the shipped fixtures. This page is the bridge between "I have some code" and "sandboxd runs it". For compiling a guest from a real language, see [Writing a Guest Module](Writing-a-Guest-Module).
 
 ## What `run` accepts
 
@@ -31,7 +31,7 @@ That is the whole contract. There is no manifest, no required entry point name (
 
 ## Reading the fixtures
 
-The five `.wat` files in `fixtures/` are both the test corpus and the documentation of each behaviour. Each one is small enough to read in full.
+The `.wat` files in `fixtures/` are both the test corpus and the documentation of each behaviour. Each one is small enough to read in full.
 
 ### `well_behaved.wat`: the happy path
 
@@ -111,6 +111,29 @@ Imports `env::secret`, which sandboxd does not provide. Rejected at instantiatio
 ```
 
 Stores 20 bytes into linear memory at offset 0 and calls `host::log` with that pointer and length. Denied by default (`DisallowedImport`), captured when granted (`allow_log`). Note the `(memory (export "memory") 1)`: that export is what lets the host read the string.
+
+### `random.wat`: the second audited capability
+
+```wat
+(module
+  (import "host" "random" (func $random (result i64)))
+  (func (export "roll") (result i32)
+    (i32.wrap_i64 (call $random))))
+```
+
+Imports `host::random`, a seeded deterministic generator, and returns the next value truncated to i32. Denied by default (`DisallowedImport`), reproducible when granted with `allow_random(seed)`. Unlike the logger it needs no linear memory: the capability hands back a number directly, so there is no pointer to validate.
+
+### `grow_within_cap.wat`: a guest that allocates but behaves
+
+```wat
+(module
+  (memory (export "memory") 1)
+  (func (export "run") (result i32)
+    (drop (memory.grow (i32.const 31)))
+    (memory.size)))
+```
+
+The counterpart to `memory_bomb.wat`: it grows from 1 page to 32 pages (2 MiB) and stops, returning the final page count. Under a cap above 2 MiB the growth is allowed and the run reports `peak_memory_bytes == 2 MiB`. This is what proves the high-water mark is recorded on a successful run, not only on a breach.
 
 ## How `host::log` reads guest memory
 

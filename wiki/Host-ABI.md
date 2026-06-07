@@ -11,16 +11,20 @@ let host = HostAbi::deny_all();   // grants nothing
 let sandbox = Sandbox::new(host)?;
 ```
 
-When `Sandbox::run` instantiates a module it first walks every declared import and rejects any that is not on the allow-list:
+When `Sandbox::run` instantiates a module it first walks every declared import and rejects any that is not on the allow-list. The allow-list lives in one function, `import_is_allowed`, so the pre-instantiation check and the instantiation-error mapping read from the same source and cannot drift apart:
 
 ```rust
+fn import_is_allowed(module: &str, name: &str, host: &HostAbi) -> bool {
+    match (module, name) {
+        ("host", "log") => host.log_allowed(),
+        ("host", "random") => host.random_allowed(),
+        _ => false,
+    }
+}
+
 fn reject_disallowed_imports(&self, module: &Module) -> Result<()> {
     for import in module.imports() {
-        let allowed = matches!(
-            (import.module(), import.name(), self.host.log_allowed()),
-            ("host", "log", true)
-        );
-        if !allowed {
+        if !import_is_allowed(import.module(), import.name(), &self.host) {
             return Err(SandboxError::DisallowedImport {
                 module: import.module().to_string(),
                 name: import.name().to_string(),
@@ -70,17 +74,46 @@ Ok(String::from_utf8_lossy(bytes).into_owned())
 
 The host never returns a pointer or handle to the guest, so there is no path from this import back into host address space. The captured lines go into a sink you own, which is exactly the audit trail you want for untrusted code.
 
+## The second audited capability: `host::random`
+
+The second capability hands the guest a seeded, deterministic stream of 64-bit numbers, and nothing else. You opt in with a seed:
+
+```rust
+let host = HostAbi::deny_all().allow_random(42);
+let sandbox = Sandbox::new(host)?;
+// ... run a module that imports host::random ...
+```
+
+The import signature is `() -> i64`: no pointer, no length, no memory access. Each call advances a splitmix64 generator held in an atomic and returns the next value:
+
+```rust
+fn next_random(state: &AtomicU64) -> u64 {
+    let z = state.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed);
+    let z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    let z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+```
+
+### Why it is safe, and what it is not for
+
+- There is no argument the guest controls and no pointer behind the call, so there is nothing to bounds-check and no path into host memory.
+- It is seeded, so the project's reproducibility guarantee holds: the same seed and the same number of calls produce the same stream every run. A module that draws random numbers stays as replayable as a pure one, which is what lets fuel keep doubling as a quota or a billing unit.
+- splitmix64 passes the usual statistical tests for a non-cryptographic generator and needs no external dependency.
+- It is **not** a cryptographic source. Do not use it for keys, nonces or anything where unpredictability matters. If a guest legitimately needs cryptographic randomness, that is a different, explicit capability you would design and audit separately.
+
 ## Adding your own capability
 
 If you extend the host, follow the same discipline:
 
 1. Add a field to `HostAbi` and an `allow_*` builder that turns it on.
-2. Update `log_allowed`-style checks (or generalise them) so `reject_disallowed_imports` recognises the new import.
+2. Add the new import to `import_is_allowed` so both the pre-check and the instantiation-error mapping recognise it.
 3. Define the function in `register`, validating every argument the guest controls before acting on it.
 4. Never hand the guest a raw host pointer, and bounds-check every read from guest memory with `get`.
 5. Audit it, and write a test that proves it is denied by default and works when granted.
 
-The shipped `host::log` is the worked reference for all five steps.
+The shipped `host::log` and `host::random` are the worked references: `host::log` for the case where the guest hands you memory you must validate, and `host::random` for the case where there is no guest-controlled input at all.
 
 ---
 SarmaLinux . sarmalinux.com . [repo](https://github.com/sarmakska/sandboxd)

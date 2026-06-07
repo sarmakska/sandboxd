@@ -8,7 +8,7 @@ A WebAssembly sandbox for running untrusted code with CPU, wall-clock and memory
 
 ## The attacks, and how each one dies
 
-I started this project from the attacker, not the API. Here are the four hostile modules I keep in `fixtures/`, what each one tries, and the exact mechanism that stops it. Every row is a test you can run.
+I started this project from the attacker, not the API. Here are the hostile modules I keep in `fixtures/`, what each one tries, and the exact mechanism that stops it. Every row is a test you can run.
 
 | Malicious module | What it attempts | How it is stopped | Error variant | Exit code |
 | --- | --- | --- | --- | --- |
@@ -16,7 +16,8 @@ I started this project from the attacker, not the API. Here are the four hostile
 | `infinite_loop.wat` (huge fuel) | spin forever, but with fuel set so high it never empties | the epoch watchdog bumps the engine epoch after the deadline; the guest trips at its next loop check | `Timeout` | 3 |
 | `memory_bomb.wat` | call `memory.grow` in a loop until the host is starved | the `ResourceLimiter` refuses the growth at the cap; `memory.grow` returns -1; the guest's `unreachable` is reported as a cap breach | `MemoryLimitExceeded` | 4 |
 | `disallowed_import.wat` | import `env::secret`, a capability that does not exist | rejected at instantiation, before any guest code runs; the error names the import | `DisallowedImport` | 5 |
-| `logger.wat` (no grant) | import `host::log` without it being granted | same deny-by-default rejection; even the one known capability is off until you ask for it | `DisallowedImport` | 5 |
+| `logger.wat` (no grant) | import `host::log` without it being granted | same deny-by-default rejection; even a known capability is off until you ask for it | `DisallowedImport` | 5 |
+| `random.wat` (no grant) | import `host::random` without it being granted | same deny-by-default rejection; the second audited capability is off until you opt in | `DisallowedImport` | 5 |
 
 Two of those rows are the same fixture stopped by two different fences. That is the whole design in one line: fuel, time and memory are independent, so a guest that wriggles past one is still caught by another.
 
@@ -66,6 +67,13 @@ cargo build --release
 # Deny-by-default in action: the same module rejected, then granted one capability.
 ./target/release/sandboxd fixtures/logger.wat                # exit 5: host::log not granted
 ./target/release/sandboxd fixtures/logger.wat --allow-log    # [guest log] hello from the guest
+
+# A second audited capability: a seeded, deterministic random source.
+./target/release/sandboxd fixtures/random.wat --invoke roll              # exit 5: host::random not granted
+./target/release/sandboxd fixtures/random.wat --invoke roll --seed 42    # result: I32(803958421), same every time
+
+# Every run reports the peak linear memory it reached, so you can size the cap.
+./target/release/sandboxd fixtures/grow_within_cap.wat --memory-mb 16    # peak linear memory: 2097152 bytes
 ```
 
 ## Embedding it
@@ -81,6 +89,9 @@ let sandbox = Sandbox::deny_all()?;
 let limits = Limits::new(1_000_000, Duration::from_millis(500), 1 << 20);
 let out = sandbox.run(wat.as_bytes(), "add", &[Value::I32(2), Value::I32(40)], &limits)?;
 assert_eq!(out.values, vec![Value::I32(42)]);
+// Every run also reports what it spent, so you can size limits from one observation.
+assert_eq!(out.peak_memory_bytes, 0);   // this module never grows its memory
+let _fuel = out.fuel_consumed;          // exact instructions burned, deterministic for a pure run
 # Ok::<(), sandboxd::SandboxError>(())
 ```
 
@@ -98,6 +109,19 @@ for line in log_sink.lock().unwrap().iter() {
 # Ok::<(), sandboxd::SandboxError>(())
 ```
 
+Granting the seeded random source and drawing reproducible numbers:
+
+```rust
+use sandboxd::{HostAbi, Sandbox};
+
+// The same seed gives the same stream every run, so a module that uses
+// host::random stays as reproducible as a pure one.
+let host = HostAbi::deny_all().allow_random(42);
+let sandbox = Sandbox::new(host)?;
+// ... run a module that imports host::random ...
+# Ok::<(), sandboxd::SandboxError>(())
+```
+
 The public surface is deliberately small: `Sandbox`, `Limits`, `HostAbi`, `SandboxError`, `Value`, `RunOutput`. There is nothing else to learn.
 
 ## Design decisions
@@ -108,7 +132,7 @@ A few choices that are not obvious, and the alternatives I turned down.
 
 **A watchdog thread, not `Config::epoch_interruption` left to tick on its own.** wasmtime's epoch counter does not advance by itself; something has to call `increment_epoch`. The usual recipe is a background thread that bumps it on a fixed cadence. I went with a per-run watchdog that sleeps until the exact deadline, bumps once, and exits, polling a shared atomic so it stops early when the run finishes first. A global ticking thread is simpler to write but gives you coarse, shared timing and a thread that runs forever; the per-run watchdog gives each call its own precise deadline and no idle thread between runs. The cost is one thread spawn per run, which against the cost of compiling and running a module is in the noise.
 
-**Deny-by-default with no WASI, instead of WASI plus a capability filter.** The tempting path is to wire in `wasmtime-wasi` and then restrict it. I did not, because WASI's surface is large and its preview is still moving, and "grant all of WASI then claw things back" is exactly the deny-list posture that leaks. Starting from nothing and adding one audited function (`host::log`) means the allow-list is short enough to read in full and the default is the safe one. If you need files or sockets, that is a real need and WASI is the right tool, but it is a different project from this one.
+**Deny-by-default with no WASI, instead of WASI plus a capability filter.** The tempting path is to wire in `wasmtime-wasi` and then restrict it. I did not, because WASI's surface is large and its preview is still moving, and "grant all of WASI then claw things back" is exactly the deny-list posture that leaks. Starting from nothing and adding audited functions one at a time (`host::log`, and a seeded `host::random`) means the allow-list is short enough to read in full and the default is the safe one. If you need files or sockets, that is a real need and WASI is the right tool, but it is a different project from this one.
 
 **A typed `SandboxError` per failure mode, not an opaque error with a message.** I wanted callers to branch on *why* a run stopped (bill it, retry it, ban the module) without scraping strings. So fuel exhaustion, timeout, memory breach, disallowed import, invalid module, export mismatch and a generic guest trap are each their own variant, and the CLI maps each to its own exit code.
 
@@ -124,6 +148,8 @@ Measured on an Apple M3 Pro (macOS 26.3, Rust 1.96, `--release`), driving the CL
 | infinite loop, 1,000,000 fuel | stopped, exit 2 |
 | infinite loop, 100 ms timeout, near-infinite fuel | stopped; wall time about 145 ms end to end across three runs (the extra over 100 ms is process spawn plus compile, not deadline slack) |
 | memory bomb, 4 MiB cap | stopped, exit 4 |
+| `roll()` with `--seed 42` | returns `I32(803958421)`, identical on every run |
+| `grow_within_cap` under a 16 MiB cap | returns `I32(32)`, peak linear memory `2097152` bytes reported |
 
 The determinism is the result I care about most: `fib(30)` consumes exactly 522 fuel every single time, which is what lets fuel double as a quota or a billing unit you can reproduce.
 
@@ -141,8 +167,8 @@ What this is not, stated plainly because real projects say so.
 
 Things I intend to do, and a couple I have decided against.
 
-- A small set of additional audited capabilities behind explicit grants, each following the `host::log` recipe: a monotonic clock and a seeded RNG are the likely first two, because they are common needs that are easy to make safe.
-- Per-run fuel and memory consumption returned together, so an embedder can size limits from one observed run.
+- A seeded, deterministic random source (`host::random`) shipped, following the `host::log` recipe. A monotonic clock is the likely next audited capability, because it is a common need that is easy to make safe.
+- Per-run fuel and peak memory are now returned together on `RunOutput`, so an embedder can size limits from one observed run. Done.
 - Optional `.wasm` precompilation and caching for embedders that run the same module repeatedly.
 - I will not add a plugin manager, a package format or a network of any kind. The scope is "run these bytes under these limits and tell me what happened", and I want it to stay that small.
 

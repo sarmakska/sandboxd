@@ -26,6 +26,7 @@ sandboxd <MODULE> [OPTIONS]
 | `--memory-mb <MB>` | `16` | linear memory cap in mebibytes |
 | `--arg <I32>` | none | an i32 argument; repeat for multiple, in order |
 | `--allow-log` | off | grant the audited `host::log` capability |
+| `--seed <SEED>` | off | grant the audited `host::random` capability, seeded with this value |
 | `-h, --help` | | print help |
 | `-V, --version` | | print version |
 
@@ -121,10 +122,40 @@ ok (no return value)
 fuel consumed: 4
 ```
 
+### The random capability
+
+Like `host::log`, `host::random` is denied by default and granted explicitly, here with a seed. The stream is deterministic, so the same seed gives the same value every run:
+
+```bash
+$ sandboxd fixtures/random.wat --invoke roll
+sandboxd: disallowed import: the module imports `host::random` which is not on the allow-list
+$ echo $?
+5
+
+$ sandboxd fixtures/random.wat --invoke roll --seed 42
+result: I32(803958421)
+fuel consumed: 3
+$ sandboxd fixtures/random.wat --invoke roll --seed 42
+result: I32(803958421)        # identical: seeded and reproducible
+```
+
+### Peak memory reporting
+
+Every run that grows its linear memory reports the high-water mark on stderr, so you can size `--memory-mb` from one observed run:
+
+```bash
+$ sandboxd fixtures/grow_within_cap.wat --memory-mb 16
+result: I32(32)
+fuel consumed: 4
+peak linear memory: 2097152 bytes
+```
+
+A module that never grows past its declared minimum prints no peak line.
+
 ## Notes
 
 - Arguments are i32 only on the CLI. For other types, or for returning structured data, use the library API.
-- `fuel consumed` is printed to stderr so it does not interfere with parsing the result on stdout.
+- `fuel consumed` and `peak linear memory` are printed to stderr so they do not interfere with parsing the result on stdout.
 - The default export name is `run`, which is why most fixtures export `run`; pass `--invoke` to call a different one.
 
 ---

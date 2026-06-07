@@ -13,14 +13,20 @@ These are real and current. None is a bug; each is a consequence of the scope.
 - **The CLI takes i32 arguments only.** The library handles the full scalar set (`i32`, `i64`, `f32`, `f64`); the binary keeps its argument parsing simple. For other types or structured returns, embed the library.
 - **Host-call time is bounded by the watchdog, not by fuel.** Time spent inside a granted host function does not consume fuel. The wall-clock deadline still bounds it, but do not rely on fuel alone to cap work that happens on the host side of an import.
 
+## Shipped
+
+These were on the roadmap and are now in the crate.
+
+- **A seeded-RNG capability (`host::random`)**, behind an explicit `allow_random(seed)` grant and following the `host::log` recipe in [Host ABI](Host-ABI): denied by default, no guest-controlled input to validate, no pointer handed back, with denied-by-default and determinism tests. Reproducible per seed and explicitly non-cryptographic.
+- **Memory high-water returned alongside fuel** on `RunOutput.peak_memory_bytes` (and on the CLI), so an embedder can size both limits from a single observed run rather than guessing the memory cap.
+
 ## Roadmap
 
 Ordered roughly by how likely I am to ship it.
 
-1. **A monotonic-clock capability and a seeded-RNG capability**, each behind an explicit grant and each following the `host::log` recipe in [Host ABI](Host-ABI): validate everything the guest controls, never hand back a pointer, write a denied-by-default test. These two are common needs that are genuinely easy to make safe.
-2. **Return memory high-water alongside fuel** in `RunOutput`, so an embedder can size both limits from a single observed run rather than guessing the memory cap.
-3. **Optional `.wasm` precompilation and an artefact cache** for embedders that run the same module repeatedly, to skip the per-run compile cost.
-4. **A streaming log sink option** so an embedder can consume guest log lines as they arrive rather than after the run, useful for long-running grants.
+1. **A monotonic-clock capability**, behind an explicit grant and following the same `host::log` recipe: validate everything the guest controls, never hand back a pointer, write a denied-by-default test. A common need that is genuinely easy to make safe, and the natural companion to the seeded RNG.
+2. **Optional `.wasm` precompilation and an artefact cache** for embedders that run the same module repeatedly, to skip the per-run compile cost.
+3. **A streaming log sink option** so an embedder can consume guest log lines as they arrive rather than after the run, useful for long-running grants.
 
 ## Things I will not add
 

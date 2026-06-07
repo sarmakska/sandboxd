@@ -89,6 +89,8 @@ impl HostAbi {
     pub fn deny_all() -> Self;
     pub fn allow_log(self) -> (Self, LogSink);
     pub fn log_allowed(&self) -> bool;
+    pub fn allow_random(self, seed: u64) -> Self;
+    pub fn random_allowed(&self) -> bool;
 }
 ```
 
@@ -97,6 +99,8 @@ impl HostAbi {
 | `deny_all()` | An ABI that grants nothing. Equal to `HostAbi::default()`. |
 | `allow_log()` | Consume the ABI and return a new one that permits `host::log`, plus the `LogSink` that will collect what the guest emits. |
 | `log_allowed()` | Whether the log capability has been granted. Used internally by the import allow-list check; also handy in your own assertions. |
+| `allow_random(seed)` | Consume the ABI and return a new one that permits `host::random`, a seeded deterministic 64-bit generator. Reproducible per seed; not cryptographic. |
+| `random_allowed()` | Whether the random capability has been granted. |
 
 `allow_log` takes `self` by value and returns the modified ABI, so it composes:
 
@@ -147,10 +151,11 @@ Defined in `src/sandbox.rs`. The outcome of a successful run.
 pub struct RunOutput {
     pub values: Vec<Value>,
     pub fuel_consumed: Option<u64>,
+    pub peak_memory_bytes: usize,
 }
 ```
 
-`values` is whatever the export returned, in order (empty for a function with no results). `fuel_consumed` is `Some` when the engine reports fuel usage, which it does whenever fuel metering is on, so in practice it is always `Some` here. It is computed as `budget - remaining`, saturating, so it never underflows.
+`values` is whatever the export returned, in order (empty for a function with no results). `fuel_consumed` is `Some` when the engine reports fuel usage, which it does whenever fuel metering is on, so in practice it is always `Some` here. It is computed as `budget - remaining`, saturating, so it never underflows. `peak_memory_bytes` is the high-water mark of linear memory the guest reached during the run, recorded on every growth the cap allowed; a module that never grows past its declared minimum reports `0`. Read these two together to size `fuel` and `memory_bytes` from one observed run.
 
 ## `SandboxError` and `Result`
 
